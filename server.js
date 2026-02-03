@@ -293,6 +293,52 @@ app.get('/api/campaigns', authenticateToken, async (req, res) => {
   }
 });
 
+// キャンペーン更新
+app.patch('/api/campaigns/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { scheduled_at, recurring_schedule, status } = req.body;
+    
+    const updates = [];
+    const values = [];
+    let paramIndex = 1;
+    
+    if (scheduled_at !== undefined) {
+      updates.push(`scheduled_at = $${paramIndex++}`);
+      values.push(scheduled_at);
+    }
+    
+    if (recurring_schedule !== undefined) {
+      updates.push(`recurring_schedule = $${paramIndex++}`);
+      values.push(recurring_schedule ? JSON.stringify(recurring_schedule) : null);
+    }
+    
+    if (status !== undefined) {
+      updates.push(`status = $${paramIndex++}`);
+      values.push(status);
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No updates provided' });
+    }
+    
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+    
+    const query = `UPDATE campaigns SET ${updates.join(', ')} WHERE id = $${paramIndex} RETURNING *`;
+    
+    const result = await pool.query(query, values);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 通知送信
 app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
   try {
