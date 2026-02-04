@@ -339,6 +339,26 @@ app.patch('/api/campaigns/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// キャンペーン削除
+app.delete('/api/campaigns/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      'DELETE FROM campaigns WHERE id = $1 RETURNING *',
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    res.json({ message: 'Campaign deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 通知送信
 app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
   try {
