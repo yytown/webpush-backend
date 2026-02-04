@@ -180,18 +180,27 @@ app.post('/api/subscribe', async (req, res) => {
   try {
     const { siteId, subscription, userAgent } = req.body;
     
+    // User-Agentを解析
+    const deviceInfo = parseUserAgent(userAgent || '');
+    
     const result = await pool.query(
-      `INSERT INTO subscribers (site_id, endpoint, p256dh_key, auth_key, user_agent)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO subscribers (site_id, endpoint, p256dh_key, auth_key, user_agent, device_type, browser, os)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (site_id, endpoint) DO UPDATE
-       SET last_active_at = CURRENT_TIMESTAMP
+       SET last_active_at = CURRENT_TIMESTAMP,
+           device_type = EXCLUDED.device_type,
+           browser = EXCLUDED.browser,
+           os = EXCLUDED.os
        RETURNING id`,
       [
         siteId,
         subscription.endpoint,
         subscription.keys.p256dh,
         subscription.keys.auth,
-        userAgent
+        userAgent,
+        deviceInfo.device,
+        deviceInfo.browser,
+        deviceInfo.os
       ]
     );
     
@@ -203,6 +212,49 @@ app.post('/api/subscribe', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// User-Agent解析関数（購読エンドポイントの前に追加）
+function parseUserAgent(userAgent) {
+  const ua = userAgent.toLowerCase();
+  
+  // デバイス判定
+  let device = 'Desktop';
+  if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(userAgent)) {
+    device = 'Tablet';
+  } else if (/Mobile|iP(hone|od)|Android|BlackBerry|IEMobile|Kindle|Silk-Accelerated|(hpw|web)OS|Opera M(obi|ini)/.test(userAgent)) {
+    device = 'Mobile';
+  }
+  
+  // ブラウザ判定
+  let browser = 'Unknown';
+  if (ua.includes('edg/')) {
+    browser = 'Edge';
+  } else if (ua.includes('chrome') && !ua.includes('edg')) {
+    browser = 'Chrome';
+  } else if (ua.includes('safari') && !ua.includes('chrome')) {
+    browser = 'Safari';
+  } else if (ua.includes('firefox')) {
+    browser = 'Firefox';
+  } else if (ua.includes('opera') || ua.includes('opr/')) {
+    browser = 'Opera';
+  }
+  
+  // OS判定
+  let os = 'Unknown';
+  if (ua.includes('windows')) {
+    os = 'Windows';
+  } else if (ua.includes('mac os')) {
+    os = 'macOS';
+  } else if (ua.includes('iphone') || ua.includes('ipad')) {
+    os = 'iOS';
+  } else if (ua.includes('android')) {
+    os = 'Android';
+  } else if (ua.includes('linux')) {
+    os = 'Linux';
+  }
+  
+  return { device, browser, os };
+}
 
 // 購読者一覧
 app.get('/api/subscribers', authenticateToken, async (req, res) => {
