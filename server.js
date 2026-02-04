@@ -437,3 +437,7 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
+
+// スケジューラーを起動
+const { startScheduler } = require('./scheduler');
+startScheduler(pool);
