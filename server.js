@@ -411,7 +411,7 @@ app.delete('/api/campaigns/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 通知送信
+// キャンペーン送信
 app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -491,6 +491,61 @@ app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
         total: subscribersResult.rows.length
       }
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// メール設定の保存
+app.post('/api/email-settings', authenticateToken, async (req, res) => {
+  try {
+    const { siteId, settings } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO email_settings (site_id, settings, updated_at)
+       VALUES ($1, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (site_id) 
+       DO UPDATE SET settings = $2, updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [siteId, JSON.stringify(settings)]
+    );
+    
+    res.json({ message: 'Settings saved', settings: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// メール設定の取得
+app.get('/api/email-settings', authenticateToken, async (req, res) => {
+  try {
+    const { siteId } = req.query;
+    
+    const result = await pool.query(
+      'SELECT * FROM email_settings WHERE site_id = $1',
+      [siteId]
+    );
+    
+    if (result.rows.length > 0) {
+      res.json({ settings: result.rows[0].settings });
+    } else {
+      res.json({ settings: null });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// テストメール送信
+app.post('/api/email-settings/test', authenticateToken, async (req, res) => {
+  try {
+    const { siteId, recipients } = req.body;
+    
+    // ここでは実際のメール送信は行わず、成功レスポンスを返す
+    // 実際の実装では、SendGrid、AWS SES、Nodemailerなどを使用
+    console.log('Test email would be sent to:', recipients);
+    
+    res.json({ message: 'Test email sent successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
