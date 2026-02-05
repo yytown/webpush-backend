@@ -463,6 +463,13 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
     const { clientName, domain, description, widgetPosition, widgetTheme } = req.body;
     const userId = req.user.id;
     
+    console.log('受信したデータ:', { clientName, domain, description, widgetPosition, widgetTheme });
+    
+    // 必須フィールドのチェック
+    if (!clientName || !domain) {
+      return res.status(400).json({ error: 'クライアント名とサイトURLは必須です' });
+    }
+    
     // ドメインの重複チェック
     const existing = await pool.query(
       'SELECT id FROM sites WHERE domain = $1',
@@ -479,7 +486,7 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
         widget_position, widget_theme, created_by, is_active
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, true)
       RETURNING *`,
-      [clientName, domain, clientName, description, widgetPosition || 'bottom-right', widgetTheme || 'purple', userId]
+      [clientName || 'Unnamed Site', domain, clientName, description || '', widgetPosition || 'bottom-right', widgetTheme || 'purple', userId]
     );
     
     res.json({ 
