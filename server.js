@@ -411,6 +411,158 @@ app.delete('/api/campaigns/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// ============================================
+// サイト管理API
+// ============================================
+
+// サイト一覧取得
+app.get('/api/sites', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT s.*, 
+              (SELECT COUNT(*) FROM subscribers WHERE site_id = s.id AND is_active = true) as subscriber_count,
+              (SELECT COUNT(*) FROM campaigns WHERE site_id = s.id) as campaign_count
+       FROM sites s
+       WHERE s.is_active = true
+       ORDER BY s.created_at DESC`
+    );
+    
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// サイト詳細取得
+app.get('/api/sites/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      `SELECT s.*, 
+              (SELECT COUNT(*) FROM subscribers WHERE site_id = s.id AND is_active = true) as subscriber_count,
+              (SELECT COUNT(*) FROM campaigns WHERE site_id = s.id) as campaign_count
+       FROM sites s
+       WHERE s.id = $1`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Site not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// サイト作成
+app.post('/api/sites', authenticateToken, async (req, res) => {
+  try {
+    const { clientName, domain, description, widgetPosition, widgetTheme } = req.body;
+    const userId = req.user.id;
+    
+    // ドメインの重複チェック
+    const existing = await pool.query(
+      'SELECT id FROM sites WHERE domain = $1',
+      [domain]
+    );
+    
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'このドメインは既に登録されています' });
+    }
+    
+    const result = await pool.query(
+      `INSERT INTO sites (
+        name, domain, client_name, description, 
+        widget_position, widget_theme, created_by, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+      RETURNING *`,
+      [clientName, domain, clientName, description, widgetPosition || 'bottom-right', widgetTheme || 'purple', userId]
+    );
+    
+    res.json({ 
+      message: 'Site created successfully', 
+      site: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// サイト更新
+app.patch('/api/sites/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { clientName, domain, description, widgetPosition, widgetTheme, isActive } = req.body;
+    
+    // ドメインの重複チェック（自分以外）
+    if (domain) {
+      const existing = await pool.query(
+        'SELECT id FROM sites WHERE domain = $1 AND id != $2',
+        [domain, id]
+      );
+      
+      if (existing.rows.length > 0) {
+        return res.status(400).json({ error: 'このドメインは既に登録されています' });
+      }
+    }
+    
+    const result = await pool.query(
+      `UPDATE sites 
+       SET client_name = COALESCE($1, client_name),
+           name = COALESCE($1, name),
+           domain = COALESCE($2, domain),
+           description = COALESCE($3, description),
+           widget_position = COALESCE($4, widget_position),
+           widget_theme = COALESCE($5, widget_theme),
+           is_active = COALESCE($6, is_active)
+       WHERE id = $7
+       RETURNING *`,
+      [clientName, domain, description, widgetPosition, widgetTheme, isActive, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Site not found' });
+    }
+    
+    res.json({ 
+      message: 'Site updated successfully', 
+      site: result.rows[0] 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// サイト削除（論理削除）
+app.delete('/api/sites/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // デフォルトサイトは削除できない
+    const siteCheck = await pool.query(
+      'SELECT domain FROM sites WHERE id = $1',
+      [id]
+    );
+    
+    if (siteCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Site not found' });
+    }
+    
+    // 論理削除
+    await pool.query(
+      'UPDATE sites SET is_active = false WHERE id = $1',
+      [id]
+    );
+    
+    res.json({ message: 'Site deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // キャンペーン送信
 app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
   try {
