@@ -272,45 +272,6 @@ app.get('/api/subscribers', authenticateToken, async (req, res) => {
   }
 });
 
-// サイト作成
-app.post('/api/sites', authenticateToken, async (req, res) => {
-  try {
-    const { name, url } = req.body;
-    
-    // VAPID鍵を生成（実際の環境では環境変数から取得）
-    const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
-    const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
-    
-    // APIキーを生成
-    const apiKey = require('crypto').randomBytes(32).toString('hex');
-    
-    const result = await pool.query(
-      `INSERT INTO sites (owner_id, name, url, vapid_public_key, vapid_private_key, api_key)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [req.user.id, name, url, vapidPublicKey, vapidPrivateKey, apiKey]
-    );
-    
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// サイト一覧
-app.get('/api/sites', authenticateToken, async (req, res) => {
-  try {
-    const result = await pool.query(
-      'SELECT * FROM sites WHERE owner_id = $1 ORDER BY created_at DESC',
-      [req.user.id]
-    );
-    
-    res.json(result.rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // キャンペーン作成
 app.post('/api/campaigns', authenticateToken, async (req, res) => {
   try {
