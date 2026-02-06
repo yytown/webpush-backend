@@ -321,7 +321,7 @@ app.get('/api/subscribers', authenticateToken, async (req, res) => {
 // キャンペーン作成
 app.post('/api/campaigns', authenticateToken, async (req, res) => {
   try {
-    let { siteId, name, title, body, url, deliveryType, scheduledAt } = req.body;
+    let { siteId, name, title, body, url, iconUrl, deliveryType, scheduledAt } = req.body;
     
     // clientユーザーは自分のサイトIDを強制
     if (req.user.role === 'client') {
@@ -336,10 +336,10 @@ app.post('/api/campaigns', authenticateToken, async (req, res) => {
     }
     
     const result = await pool.query(
-      `INSERT INTO campaigns (site_id, name, title, body, url, delivery_type, scheduled_at, created_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO campaigns (site_id, name, title, body, url, icon_url, delivery_type, scheduled_at, created_by, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [siteId, name, title, body, url, deliveryType, scheduledAt, req.user.id, 'draft']
+      [siteId, name, title, body, url, iconUrl || null, deliveryType, scheduledAt, req.user.id, 'draft']
     );
     
     res.status(201).json(result.rows[0]);
