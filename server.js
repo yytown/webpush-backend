@@ -69,6 +69,32 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// サイトアクセス権限チェックミドルウェア
+function checkSiteAccess(req, res, next) {
+  const userRole = req.user.role;
+  const userSiteId = req.user.assigned_site_id;
+  
+  // adminは全サイトアクセス可能
+  if (userRole === 'admin') {
+    return next();
+  }
+  
+  // clientは自分のサイトのみ
+  const requestedSiteId = req.query.siteId || req.body.siteId || req.params.siteId;
+  
+  if (requestedSiteId && requestedSiteId !== userSiteId) {
+    return res.status(403).json({ error: 'このサイトへのアクセス権限がありません' });
+  }
+  
+  // siteIdが指定されていない場合は自動的に設定
+  if (!req.query.siteId && !req.body.siteId) {
+    req.query.siteId = userSiteId;
+    req.body.siteId = userSiteId;
+  }
+  
+  next();
+}
+
 // ヘルスチェックエンドポイント
 app.get('/health', async (req, res) => {
   try {
@@ -156,8 +182,14 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
+    // JWTトークンにroleとassigned_site_idを含める
     const token = jwt.sign(
-      { id: user.id, email: user.email },
+      { 
+        id: user.id, 
+        email: user.email,
+        role: user.role || 'client',
+        assigned_site_id: user.assigned_site_id
+      },
       process.env.JWT_SECRET || 'default-secret',
       { expiresIn: '24h' }
     );
@@ -167,7 +199,9 @@ app.post('/api/auth/login', async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
-        name: user.name
+        name: user.name,
+        role: user.role || 'client',
+        assigned_site_id: user.assigned_site_id
       }
     });
   } catch (error) {
@@ -259,7 +293,19 @@ function parseUserAgent(userAgent) {
 // 購読者一覧
 app.get('/api/subscribers', authenticateToken, async (req, res) => {
   try {
-    const { siteId } = req.query;
+    let { siteId } = req.query;
+    
+    // clientユーザーは自分のサイトIDを強制
+    if (req.user.role === 'client') {
+      if (!req.user.assigned_site_id) {
+        return res.status(403).json({ error: 'サイトが割り当てられていません' });
+      }
+      siteId = req.user.assigned_site_id;
+    }
+    
+    if (!siteId) {
+      return res.status(400).json({ error: 'siteId is required' });
+    }
     
     const result = await pool.query(
       'SELECT * FROM subscribers WHERE site_id = $1 AND is_active = true ORDER BY subscribed_at DESC',
@@ -275,7 +321,19 @@ app.get('/api/subscribers', authenticateToken, async (req, res) => {
 // キャンペーン作成
 app.post('/api/campaigns', authenticateToken, async (req, res) => {
   try {
-    const { siteId, name, title, body, url, deliveryType, scheduledAt } = req.body;
+    let { siteId, name, title, body, url, deliveryType, scheduledAt } = req.body;
+    
+    // clientユーザーは自分のサイトIDを強制
+    if (req.user.role === 'client') {
+      if (!req.user.assigned_site_id) {
+        return res.status(403).json({ error: 'サイトが割り当てられていません' });
+      }
+      siteId = req.user.assigned_site_id;
+    }
+    
+    if (!siteId) {
+      return res.status(400).json({ error: 'siteId is required' });
+    }
     
     const result = await pool.query(
       `INSERT INTO campaigns (site_id, name, title, body, url, delivery_type, scheduled_at, created_by, status)
@@ -293,7 +351,19 @@ app.post('/api/campaigns', authenticateToken, async (req, res) => {
 // キャンペーン一覧
 app.get('/api/campaigns', authenticateToken, async (req, res) => {
   try {
-    const { siteId } = req.query;
+    let { siteId } = req.query;
+    
+    // clientユーザーは自分のサイトIDを強制
+    if (req.user.role === 'client') {
+      if (!req.user.assigned_site_id) {
+        return res.status(403).json({ error: 'サイトが割り当てられていません' });
+      }
+      siteId = req.user.assigned_site_id;
+    }
+    
+    if (!siteId) {
+      return res.status(400).json({ error: 'siteId is required' });
+    }
     
     const result = await pool.query(
       'SELECT * FROM campaigns WHERE site_id = $1 ORDER BY created_at DESC',
@@ -379,15 +449,23 @@ app.delete('/api/campaigns/:id', authenticateToken, async (req, res) => {
 // サイト一覧取得
 app.get('/api/sites', authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT s.*, 
-              (SELECT COUNT(*) FROM subscribers WHERE site_id = s.id AND is_active = true) as subscriber_count,
-              (SELECT COUNT(*) FROM campaigns WHERE site_id = s.id) as campaign_count
-       FROM sites s
-       WHERE s.is_active = true
-       ORDER BY s.created_at DESC`
-    );
+    let query = `SELECT s.*, 
+            (SELECT COUNT(*) FROM subscribers WHERE site_id = s.id AND is_active = true) as subscriber_count,
+            (SELECT COUNT(*) FROM campaigns WHERE site_id = s.id) as campaign_count
+     FROM sites s
+     WHERE s.is_active = true`;
     
+    let params = [];
+    
+    // clientユーザーは自分のサイトのみ表示
+    if (req.user.role === 'client' && req.user.assigned_site_id) {
+      query += ' AND s.id = $1';
+      params.push(req.user.assigned_site_id);
+    }
+    
+    query += ' ORDER BY s.created_at DESC';
+    
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -398,6 +476,11 @@ app.get('/api/sites', authenticateToken, async (req, res) => {
 app.get('/api/sites/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // clientユーザーは自分のサイトのみアクセス可能
+    if (req.user.role === 'client' && req.user.assigned_site_id !== id) {
+      return res.status(403).json({ error: 'このサイトへのアクセス権限がありません' });
+    }
     
     const result = await pool.query(
       `SELECT s.*, 
@@ -706,6 +789,108 @@ app.post('/api/email-settings/test', authenticateToken, async (req, res) => {
     
     res.json({ message: 'Test email sent successfully' });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// クライアントユーザー作成（admin専用）
+app.post('/api/users/client', authenticateToken, async (req, res) => {
+  try {
+    // admin権限チェック
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: '管理者のみ実行可能です' });
+    }
+    
+    const { email, password, name, siteId } = req.body;
+    
+    // 入力チェック
+    if (!email || !password || !siteId) {
+      return res.status(400).json({ error: 'メールアドレス、パスワード、サイトIDは必須です' });
+    }
+    
+    // メールアドレスの重複チェック
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'このメールアドレスは既に登録されています' });
+    }
+    
+    // サイトの存在チェック
+    const siteCheck = await pool.query('SELECT id FROM sites WHERE id = $1', [siteId]);
+    if (siteCheck.rows.length === 0) {
+      return res.status(400).json({ error: '指定されたサイトが見つかりません' });
+    }
+    
+    // パスワードハッシュ化
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    const result = await pool.query(
+      `INSERT INTO users (email, password_hash, name, role, assigned_site_id, created_at)
+       VALUES ($1, $2, $3, 'client', $4, CURRENT_TIMESTAMP)
+       RETURNING id, email, name, role, assigned_site_id`,
+      [email, hashedPassword, name || email, siteId]
+    );
+    
+    res.json({ 
+      message: 'クライアントユーザーを作成しました', 
+      user: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('クライアントユーザー作成エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// クライアントユーザー一覧（admin専用）
+app.get('/api/users/clients', authenticateToken, async (req, res) => {
+  try {
+    // admin権限チェック
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: '管理者のみ実行可能です' });
+    }
+    
+    const result = await pool.query(
+      `SELECT u.id, u.email, u.name, u.role, u.assigned_site_id, u.created_at,
+              s.name as site_name, s.domain as site_domain
+       FROM users u
+       LEFT JOIN sites s ON u.assigned_site_id = s.id
+       WHERE u.role = 'client'
+       ORDER BY u.created_at DESC`
+    );
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('クライアント一覧取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// クライアントユーザー削除（admin専用）
+app.delete('/api/users/client/:id', authenticateToken, async (req, res) => {
+  try {
+    // admin権限チェック
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: '管理者のみ実行可能です' });
+    }
+    
+    const { id } = req.params;
+    
+    // 自分自身は削除できない
+    if (id === req.user.id) {
+      return res.status(400).json({ error: '自分自身は削除できません' });
+    }
+    
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 AND role = $2 RETURNING id',
+      [id, 'client']
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'ユーザーが見つかりません' });
+    }
+    
+    res.json({ message: 'クライアントユーザーを削除しました' });
+  } catch (error) {
+    console.error('クライアント削除エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
