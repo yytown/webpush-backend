@@ -431,6 +431,11 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'クライアント名とサイトURLは必須です' });
     }
     
+    // VAPID鍵のチェック
+    if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) {
+      return res.status(500).json({ error: 'VAPID鍵が設定されていません' });
+    }
+    
     // ドメインの重複チェック
     const existing = await pool.query(
       'SELECT id FROM sites WHERE domain = $1',
@@ -447,17 +452,21 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
     const result = await pool.query(
       `INSERT INTO sites (
         name, domain, url, client_name, description, 
-        widget_position, widget_theme, created_by, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+        widget_position, widget_theme, 
+        vapid_public_key, vapid_private_key,
+        created_by, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
       RETURNING *`,
       [
         clientName || 'Unnamed Site', 
         domain, 
-        siteUrl,  // ← url追加
+        siteUrl,
         clientName, 
         description || '', 
         widgetPosition || 'bottom-right', 
         widgetTheme || 'purple', 
+        process.env.VAPID_PUBLIC_KEY,   // ← VAPID公開鍵
+        process.env.VAPID_PRIVATE_KEY,  // ← VAPID秘密鍵
         userId
       ]
     );
@@ -467,6 +476,7 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
       site: result.rows[0] 
     });
   } catch (error) {
+    console.error('サイト作成エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
