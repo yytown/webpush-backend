@@ -446,28 +446,45 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'このドメインは既に登録されています' });
     }
     
-    // domainをベースにURLを生成（https://を追加）
+    // domainをベースにURLを生成
     const siteUrl = domain.startsWith('http') ? domain : `https://${domain}`;
+    
+    // API Keyを生成（ランダムな64文字の16進数）
+    const crypto = require('crypto');
+    const apiKey = crypto.randomBytes(32).toString('hex');
     
     const result = await pool.query(
       `INSERT INTO sites (
-        name, domain, url, client_name, description, 
-        widget_position, widget_theme, 
-        vapid_public_key, vapid_private_key,
-        created_by, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
+        owner_id,
+        name, 
+        domain, 
+        url, 
+        client_name, 
+        description, 
+        widget_position, 
+        widget_theme, 
+        vapid_public_key, 
+        vapid_private_key,
+        api_key,
+        settings,
+        is_active,
+        created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, $13)
       RETURNING *`,
       [
-        clientName || 'Unnamed Site', 
-        domain, 
-        siteUrl,
-        clientName, 
-        description || '', 
-        widgetPosition || 'bottom-right', 
-        widgetTheme || 'purple', 
-        process.env.VAPID_PUBLIC_KEY,   // ← VAPID公開鍵
-        process.env.VAPID_PRIVATE_KEY,  // ← VAPID秘密鍵
-        userId
+        userId,                           // owner_id
+        clientName || 'Unnamed Site',     // name
+        domain,                           // domain
+        siteUrl,                          // url
+        clientName,                       // client_name
+        description || '',                // description
+        widgetPosition || 'bottom-right', // widget_position
+        widgetTheme || 'purple',          // widget_theme
+        process.env.VAPID_PUBLIC_KEY,     // vapid_public_key
+        process.env.VAPID_PRIVATE_KEY,    // vapid_private_key
+        apiKey,                           // api_key
+        JSON.stringify({}),               // settings（空のJSON）
+        userId                            // created_by
       ]
     );
     
