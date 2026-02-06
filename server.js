@@ -441,13 +441,25 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'このドメインは既に登録されています' });
     }
     
+    // domainをベースにURLを生成（https://を追加）
+    const siteUrl = domain.startsWith('http') ? domain : `https://${domain}`;
+    
     const result = await pool.query(
       `INSERT INTO sites (
-        name, domain, client_name, description, 
+        name, domain, url, client_name, description, 
         widget_position, widget_theme, created_by, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
       RETURNING *`,
-      [clientName || 'Unnamed Site', domain, clientName, description || '', widgetPosition || 'bottom-right', widgetTheme || 'purple', userId]
+      [
+        clientName || 'Unnamed Site', 
+        domain, 
+        siteUrl,  // ← url追加
+        clientName, 
+        description || '', 
+        widgetPosition || 'bottom-right', 
+        widgetTheme || 'purple', 
+        userId
+      ]
     );
     
     res.json({ 
