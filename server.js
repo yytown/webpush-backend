@@ -321,7 +321,7 @@ app.get('/api/subscribers', authenticateToken, async (req, res) => {
 // キャンペーン作成
 app.post('/api/campaigns', authenticateToken, async (req, res) => {
   try {
-    let { siteId, name, title, body, url, iconUrl, deliveryType, scheduledAt } = req.body;
+    let { siteId, name, title, body, url, iconUrl, deliveryType, scheduledAt, recurringSchedule } = req.body;
     
     // clientユーザーは自分のサイトIDを強制
     if (req.user.role === 'client') {
@@ -335,11 +335,28 @@ app.post('/api/campaigns', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'siteId is required' });
     }
     
+    // 繰り返し配信の場合、初回scheduled_atを計算
+    if (deliveryType === 'recurring' && recurringSchedule) {
+      scheduledAt = calculateNextScheduledTime(recurringSchedule);
+    }
+    
     const result = await pool.query(
-      `INSERT INTO campaigns (site_id, name, title, body, url, icon_url, delivery_type, scheduled_at, created_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO campaigns (site_id, name, title, body, url, icon_url, delivery_type, scheduled_at, recurring_schedule, created_by, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [siteId, name, title, body, url, iconUrl || null, deliveryType, scheduledAt, req.user.id, 'draft']
+      [
+        siteId, 
+        name, 
+        title, 
+        body, 
+        url, 
+        iconUrl || null, 
+        deliveryType, 
+        scheduledAt, 
+        recurringSchedule ? JSON.stringify(recurringSchedule) : null,
+        req.user.id, 
+        'draft'
+      ]
     );
     
     res.status(201).json(result.rows[0]);
@@ -653,23 +670,64 @@ app.delete('/api/sites/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// キャンペーン送信
-app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
+// 次回実行日時を計算
+function calculateNextScheduledTime(recurringSchedule, lastExecuted = null) {
+  const { frequency, hour, minute, dayOfWeek, dayOfMonth } = recurringSchedule;
+  
+  // 基準日時（最後の実行日時 or 現在時刻）
+  const baseDate = lastExecuted ? new Date(lastExecuted) : new Date();
+  const nextDate = new Date(baseDate);
+  
+  // 時刻を設定
+  nextDate.setHours(parseInt(hour) || 0);
+  nextDate.setMinutes(parseInt(minute) || 0);
+  nextDate.setSeconds(0);
+  nextDate.setMilliseconds(0);
+  
+  switch (frequency) {
+    case 'daily':
+      // 翌日の同時刻（既に今日の時刻を過ぎている場合は明日）
+      if (nextDate <= baseDate) {
+        nextDate.setDate(nextDate.getDate() + 1);
+      }
+      break;
+      
+    case 'weekly':
+      // 次の指定曜日
+      const targetDay = parseInt(dayOfWeek) || 0;
+      const currentDay = nextDate.getDay();
+      let daysUntilNext = targetDay - currentDay;
+      
+      // 同じ曜日で時刻が過ぎている場合、または曜日が過去の場合は来週
+      if (daysUntilNext < 0 || (daysUntilNext === 0 && nextDate <= baseDate)) {
+        daysUntilNext += 7;
+      }
+      
+      nextDate.setDate(nextDate.getDate() + daysUntilNext);
+      break;
+      
+    case 'monthly':
+      // 次月の指定日
+      const targetDate = parseInt(dayOfMonth) || 1;
+      
+      // 今月の指定日がまだ来ていない場合は今月、過ぎている場合は来月
+      nextDate.setDate(targetDate);
+      if (nextDate <= baseDate) {
+        nextDate.setMonth(nextDate.getMonth() + 1);
+      }
+      
+      // 月末を超える場合は月末日に調整
+      const daysInMonth = new Date(nextDate.getFullYear(), nextDate.getMonth() + 1, 0).getDate();
+      nextDate.setDate(Math.min(targetDate, daysInMonth));
+      break;
+  }
+  
+  return nextDate.toISOString();
+}
+
+// キャンペーン送信処理（共通関数）
+async function sendCampaignNotifications(campaign) {
   try {
-    const { id } = req.params;
-    
-    // キャンペーン取得
-    const campaignResult = await pool.query(
-      'SELECT * FROM campaigns WHERE id = $1',
-      [id]
-    );
-    
-    if (campaignResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Campaign not found' });
-    }
-    
-    const campaign = campaignResult.rows[0];
-    
     // 購読者取得
     const subscribersResult = await pool.query(
       'SELECT * FROM subscribers WHERE site_id = $1 AND is_active = true',
@@ -703,7 +761,7 @@ app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
         await pool.query(
           `INSERT INTO deliveries (campaign_id, subscriber_id, status, sent_at)
            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)`,
-          [id, subscriber.id, 'sent']
+          [campaign.id, subscriber.id, 'sent']
         );
         
         successCount++;
@@ -714,24 +772,53 @@ app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
         await pool.query(
           `INSERT INTO deliveries (campaign_id, subscriber_id, status, error_message)
            VALUES ($1, $2, $3, $4)`,
-          [id, subscriber.id, 'failed', error.message]
+          [campaign.id, subscriber.id, 'failed', error.message]
         );
       }
     }
     
-    // キャンペーンステータス更新
-    await pool.query(
-      'UPDATE campaigns SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['sent', id]
+    // キャンペーンステータス更新（日時指定配信のみ）
+    if (campaign.delivery_type !== 'recurring') {
+      await pool.query(
+        'UPDATE campaigns SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['sent', campaign.id]
+      );
+    }
+    
+    return {
+      success: successCount,
+      failed: failCount,
+      total: subscribersResult.rows.length
+    };
+  } catch (error) {
+    console.error('通知送信エラー:', error);
+    throw error;
+  }
+}
+
+// キャンペーン送信エンドポイント
+app.post('/api/campaigns/:id/send', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // キャンペーン取得
+    const campaignResult = await pool.query(
+      'SELECT * FROM campaigns WHERE id = $1',
+      [id]
     );
+    
+    if (campaignResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    
+    const campaign = campaignResult.rows[0];
+    
+    // 通知送信
+    const results = await sendCampaignNotifications(campaign);
     
     res.json({
       message: 'Campaign sent',
-      results: {
-        success: successCount,
-        failed: failCount,
-        total: subscribersResult.rows.length
-      }
+      results
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -895,14 +982,169 @@ app.delete('/api/users/client/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// 予約キャンペーン一覧取得
+app.get('/api/campaigns/scheduled', authenticateToken, checkSiteAccess, async (req, res) => {
+  try {
+    const { siteId } = req.query;
+    
+    let query = `
+      SELECT c.*, s.client_name, s.domain,
+             (SELECT COUNT(*) FROM deliveries WHERE campaign_id = c.id) as delivery_count
+      FROM campaigns c
+      JOIN sites s ON c.site_id = s.id
+      WHERE c.delivery_type IN ('scheduled', 'recurring')
+      AND c.status = 'draft'
+    `;
+    
+    const params = [];
+    
+    if (siteId) {
+      query += ' AND c.site_id = $1';
+      params.push(siteId);
+    }
+    
+    query += ' ORDER BY c.scheduled_at ASC';
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('予約一覧取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 予約キャンペーンキャンセル
+app.delete('/api/campaigns/scheduled/:id', authenticateToken, checkSiteAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      `UPDATE campaigns 
+       SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1 AND status = 'draft'
+       RETURNING *`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'キャンペーンが見つかりません' });
+    }
+    
+    res.json({ 
+      message: '予約をキャンセルしました',
+      campaign: result.rows[0]
+    });
+  } catch (error) {
+    console.error('予約キャンセルエラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 繰り返し配信停止
+app.post('/api/campaigns/recurring/:id/stop', authenticateToken, checkSiteAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      `UPDATE campaigns 
+       SET status = 'stopped', updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1 AND delivery_type = 'recurring' AND status = 'draft'
+       RETURNING *`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '繰り返し配信が見つかりません' });
+    }
+    
+    res.json({ 
+      message: '繰り返し配信を停止しました',
+      campaign: result.rows[0]
+    });
+  } catch (error) {
+    console.error('繰り返し配信停止エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// スケジュールされたキャンペーンを実行（1分ごと）
+async function executeScheduledCampaigns() {
+  try {
+    const now = new Date().toISOString();
+    
+    // 実行すべきキャンペーンを取得（scheduled と recurring 両方）
+    const result = await pool.query(
+      `SELECT * FROM campaigns 
+       WHERE delivery_type IN ('scheduled', 'recurring')
+       AND status = 'draft' 
+       AND scheduled_at <= $1`,
+      [now]
+    );
+    
+    if (result.rows.length > 0) {
+      console.log(`📅 ${result.rows.length}件のスケジュール配信を実行中...`);
+    }
+    
+    for (const campaign of result.rows) {
+      try {
+        console.log(`  → キャンペーン「${campaign.title}」を送信中...`);
+        const results = await sendCampaignNotifications(campaign);
+        console.log(`  ✅ 送信完了: 成功${results.success}件, 失敗${results.failed}件`);
+        
+        // 繰り返し配信の場合は次回実行日時を計算
+        if (campaign.delivery_type === 'recurring' && campaign.recurring_schedule) {
+          const nextTime = calculateNextScheduledTime(campaign.recurring_schedule, campaign.scheduled_at);
+          
+          await pool.query(
+            `UPDATE campaigns 
+             SET scheduled_at = $1, updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $2`,
+            [nextTime, campaign.id]
+          );
+          
+          console.log(`  🔄 次回配信: ${new Date(nextTime).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}`);
+        }
+        // 日時指定配信の場合はステータスを送信済みに更新（sendCampaignNotifications内で既に更新済み）
+        
+      } catch (error) {
+        console.error(`  ❌ キャンペーン送信エラー (ID: ${campaign.id}):`, error.message);
+      }
+    }
+  } catch (error) {
+    console.error('❌ スケジュール実行エラー:', error.message);
+  }
+}
+
+// スケジューラー起動（1分ごとにチェック）
+let schedulerInterval;
+function startScheduler() {
+  console.log('⏰ スケジューラーを起動しました（1分間隔）');
+  
+  // 即座に1回実行
+  executeScheduledCampaigns();
+  
+  // 1分ごとに実行
+  schedulerInterval = setInterval(executeScheduledCampaigns, 60000);
+}
+
 // サーバー起動
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Web Push API server running on port ${PORT}`);
+  
+  // スケジューラー起動
+  startScheduler();
 });
 
 // グレースフルシャットダウン
 process.on('SIGTERM', () => {
   console.log('SIGTERM signal received: closing HTTP server');
+  
+  // スケジューラー停止
+  if (schedulerInterval) {
+    clearInterval(schedulerInterval);
+    console.log('⏰ スケジューラーを停止しました');
+  }
+  
   pool.end(() => {
     console.log('Database pool closed');
     process.exit(0);
