@@ -786,7 +786,7 @@ async function sendCampaignNotifications(campaign) {
         
         if (shouldDeactivate) {
           await pool.query(
-            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            'UPDATE subscribers SET is_active = false WHERE id = $1',
             [subscriber.id]
           );
           console.log(`  ⚠️ 購読者 ${subscriber.id} を自動非アクティブ化 (${error.message})`);
@@ -1242,7 +1242,7 @@ app.post('/api/subscribers/validate', authenticateToken, async (req, res) => {
         
         if (shouldDeactivate) {
           await pool.query(
-            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            'UPDATE subscribers SET is_active = false WHERE id = $1',
             [subscriber.id]
           );
           deactivatedCount++;
@@ -1380,7 +1380,7 @@ async function validateAllSubscribers() {
         
         if (shouldDeactivate) {
           await pool.query(
-            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            'UPDATE subscribers SET is_active = false WHERE id = $1',
             [subscriber.id]
           );
           deactivatedCount++;
