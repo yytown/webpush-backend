@@ -774,6 +774,23 @@ async function sendCampaignNotifications(campaign) {
            VALUES ($1, $2, $3, $4)`,
           [campaign.id, subscriber.id, 'failed', error.message]
         );
+        
+        // 購読が無効になっている場合は自動で非アクティブ化
+        const errorCode = error.statusCode || error.code;
+        const shouldDeactivate = 
+          errorCode === 410 || // Gone - 購読削除済み
+          errorCode === 404 || // Not Found - エンドポイント無効
+          errorCode === 403 || // Forbidden - アクセス拒否
+          error.message?.includes('expired') ||
+          error.message?.includes('unsubscribed');
+        
+        if (shouldDeactivate) {
+          await pool.query(
+            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            [subscriber.id]
+          );
+          console.log(`  ⚠️ 購読者 ${subscriber.id} を自動非アクティブ化 (${error.message})`);
+        }
       }
     }
     
@@ -1067,6 +1084,192 @@ app.post('/api/campaigns/recurring/:id/stop', authenticateToken, checkSiteAccess
   }
 });
 
+// キャンペーン配信履歴の詳細取得
+app.get('/api/campaigns/:id/delivery-history', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    
+    // キャンペーン情報取得
+    const campaignResult = await pool.query(
+      `SELECT c.*, s.client_name, s.domain 
+       FROM campaigns c
+       JOIN sites s ON c.site_id = s.id
+       WHERE c.id = $1`,
+      [id]
+    );
+    
+    if (campaignResult.rows.length === 0) {
+      return res.status(404).json({ error: 'キャンペーンが見つかりません' });
+    }
+    
+    const campaign = campaignResult.rows[0];
+    
+    // 配信統計取得
+    const statsResult = await pool.query(
+      `SELECT 
+         COUNT(*) as total_deliveries,
+         COUNT(CASE WHEN status = 'sent' THEN 1 END) as success_count,
+         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
+         MIN(sent_at) as first_sent,
+         MAX(sent_at) as last_sent
+       FROM deliveries 
+       WHERE campaign_id = $1`,
+      [id]
+    );
+    
+    // 配信履歴詳細（ページネーション）
+    const offset = (page - 1) * limit;
+    const deliveriesResult = await pool.query(
+      `SELECT 
+         d.*,
+         s.endpoint,
+         s.device_type,
+         s.browser,
+         s.os
+       FROM deliveries d
+       LEFT JOIN subscribers s ON d.subscriber_id = s.id
+       WHERE d.campaign_id = $1
+       ORDER BY d.sent_at DESC
+       LIMIT $2 OFFSET $3`,
+      [id, limit, offset]
+    );
+    
+    // 日別配信統計（繰り返し配信用）
+    const dailyStatsResult = await pool.query(
+      `SELECT 
+         DATE(sent_at) as date,
+         COUNT(*) as total,
+         COUNT(CASE WHEN status = 'sent' THEN 1 END) as success,
+         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed
+       FROM deliveries
+       WHERE campaign_id = $1
+       GROUP BY DATE(sent_at)
+       ORDER BY date DESC
+       LIMIT 30`,
+      [id]
+    );
+    
+    res.json({
+      campaign,
+      statistics: statsResult.rows[0],
+      deliveries: deliveriesResult.rows,
+      dailyStats: dailyStatsResult.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: parseInt(statsResult.rows[0].total_deliveries)
+      }
+    });
+  } catch (error) {
+    console.error('配信履歴取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// エラー別配信統計
+app.get('/api/campaigns/:id/error-stats', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const result = await pool.query(
+      `SELECT 
+         error_message,
+         COUNT(*) as count
+       FROM deliveries
+       WHERE campaign_id = $1 AND status = 'failed'
+       GROUP BY error_message
+       ORDER BY count DESC
+       LIMIT 10`,
+      [id]
+    );
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('エラー統計取得エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 購読者有効性チェック（アクティブな購読者を検証）
+app.post('/api/subscribers/validate', authenticateToken, async (req, res) => {
+  try {
+    const { siteId } = req.body;
+    
+    // アクティブな購読者を取得
+    const subscribersResult = await pool.query(
+      'SELECT * FROM subscribers WHERE site_id = $1 AND is_active = true',
+      [siteId]
+    );
+    
+    let checkedCount = 0;
+    let deactivatedCount = 0;
+    let validCount = 0;
+    
+    // 各購読者に対してダミー通知を送信（実際には送らず、エンドポイントの有効性のみチェック）
+    for (const subscriber of subscribersResult.rows) {
+      checkedCount++;
+      
+      try {
+        const subscription = {
+          endpoint: subscriber.endpoint,
+          keys: {
+            p256dh: subscriber.p256dh_key,
+            auth: subscriber.auth_key
+          }
+        };
+        
+        // テスト用の空ペイロード（実際には送信されない）
+        const testPayload = JSON.stringify({
+          title: 'テスト',
+          body: 'このメッセージは送信されません',
+          tag: 'validation-test'
+        });
+        
+        // エンドポイントの検証（実際に送信）
+        await webpush.sendNotification(subscription, testPayload);
+        validCount++;
+        
+      } catch (error) {
+        // エラーの種類によって非アクティブ化
+        const errorCode = error.statusCode || error.code;
+        const shouldDeactivate = 
+          errorCode === 410 || // Gone
+          errorCode === 404 || // Not Found
+          errorCode === 403 || // Forbidden
+          error.message?.includes('expired') ||
+          error.message?.includes('unsubscribed');
+        
+        if (shouldDeactivate) {
+          await pool.query(
+            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            [subscriber.id]
+          );
+          deactivatedCount++;
+          console.log(`非アクティブ化: ${subscriber.id} - ${error.message}`);
+        }
+      }
+      
+      // 1秒あたり10件程度に制限（レート制限対策）
+      if (checkedCount % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    res.json({
+      message: '購読者の有効性チェックが完了しました',
+      results: {
+        checked: checkedCount,
+        valid: validCount,
+        deactivated: deactivatedCount
+      }
+    });
+  } catch (error) {
+    console.error('購読者検証エラー:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // スケジュールされたキャンペーンを実行（1分ごと）
 async function executeScheduledCampaigns() {
   try {
@@ -1127,22 +1330,111 @@ function startScheduler() {
   schedulerInterval = setInterval(executeScheduledCampaigns, 60000);
 }
 
+// 購読者有効性チェック（定期実行）
+let validationInterval;
+
+async function validateAllSubscribers() {
+  console.log('🔍 購読者有効性チェック開始...');
+  
+  try {
+    // 全サイトのアクティブな購読者を取得
+    const subscribersResult = await pool.query(
+      'SELECT * FROM subscribers WHERE is_active = true'
+    );
+    
+    let checkedCount = 0;
+    let deactivatedCount = 0;
+    let validCount = 0;
+    
+    for (const subscriber of subscribersResult.rows) {
+      checkedCount++;
+      
+      try {
+        const subscription = {
+          endpoint: subscriber.endpoint,
+          keys: {
+            p256dh: subscriber.p256dh_key,
+            auth: subscriber.auth_key
+          }
+        };
+        
+        // テスト通知を送信（非常に小さいペイロード）
+        const testPayload = JSON.stringify({
+          title: '.',
+          body: '.',
+          tag: 'validation-' + Date.now()
+        });
+        
+        await webpush.sendNotification(subscription, testPayload);
+        validCount++;
+        
+      } catch (error) {
+        // エラーの種類によって非アクティブ化
+        const errorCode = error.statusCode || error.code;
+        const shouldDeactivate = 
+          errorCode === 410 || // Gone
+          errorCode === 404 || // Not Found  
+          errorCode === 403 || // Forbidden
+          error.message?.includes('expired') ||
+          error.message?.includes('unsubscribed');
+        
+        if (shouldDeactivate) {
+          await pool.query(
+            'UPDATE subscribers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+            [subscriber.id]
+          );
+          deactivatedCount++;
+          console.log(`  ⚠️ 非アクティブ化: ${subscriber.id} (${error.message})`);
+        }
+      }
+      
+      // レート制限対策: 10件ごとに1秒待機
+      if (checkedCount % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    console.log(`✅ 有効性チェック完了: チェック ${checkedCount}件 / 有効 ${validCount}件 / 非アクティブ化 ${deactivatedCount}件`);
+  } catch (error) {
+    console.error('❌ 有効性チェックエラー:', error);
+  }
+}
+
+function startValidationScheduler() {
+  console.log('🔍 購読者有効性チェックスケジューラー起動');
+  
+  // 24時間ごとに実行（86400000ミリ秒）
+  validationInterval = setInterval(validateAllSubscribers, 86400000);
+  
+  // 初回は1時間後に実行（最初はキャンペーン配信時のチェックに任せる）
+  setTimeout(validateAllSubscribers, 3600000);
+}
+
 // サーバー起動
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Web Push API server running on port ${PORT}`);
   
-  // スケジューラー起動
+  // キャンペーンスケジューラー起動
   startScheduler();
+  
+  // 購読者有効性チェックスケジューラー起動
+  startValidationScheduler();
 });
 
 // グレースフルシャットダウン
 process.on('SIGTERM', () => {
   console.log('SIGTERM signal received: closing HTTP server');
   
-  // スケジューラー停止
+  // キャンペーンスケジューラー停止
   if (schedulerInterval) {
     clearInterval(schedulerInterval);
-    console.log('⏰ スケジューラーを停止しました');
+    console.log('⏰ キャンペーンスケジューラーを停止しました');
+  }
+  
+  // 有効性チェックスケジューラー停止
+  if (validationInterval) {
+    clearInterval(validationInterval);
+    console.log('🔍 有効性チェックスケジューラーを停止しました');
   }
   
   pool.end(() => {
