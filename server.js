@@ -230,13 +230,13 @@ app.get('/vapid-public-key', (req, res) => {
 
 // 購読エンドポイント
 app.post('/api/subscribe', async (req, res) => {
-  // ... 既存のコード ...
-});
-
-// 購読エンドポイント
-app.post('/api/subscribe', async (req, res) => {
   try {
+    console.log('=== 購読リクエスト受信 ===');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    
     const { siteId, subscription, userAgent } = req.body;
+    
+    console.log('siteId:', siteId);
     
     // User-Agentを解析
     const deviceInfo = parseUserAgent(userAgent || '');
@@ -262,11 +262,14 @@ app.post('/api/subscribe', async (req, res) => {
       ]
     );
     
+    console.log('✅ 購読保存成功:', result.rows[0].id);
+    
     res.json({
       message: 'Subscription saved',
       subscriberId: result.rows[0].id
     });
   } catch (error) {
+    console.error('❌ 購読エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
