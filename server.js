@@ -209,34 +209,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// ============================================
-// VAPID公開鍵エンドポイント（認証不要）
-// ============================================
-app.get('/vapid-public-key', (req, res) => {
-    try {
-        if (!process.env.VAPID_PUBLIC_KEY) {
-            console.error('❌ VAPID_PUBLIC_KEY not set in environment');
-            return res.status(500).json({ 
-                error: 'VAPID public key not configured' 
-            });
-        }
-        
-        res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
-    } catch (error) {
-        console.error('VAPID公開鍵取得エラー:', error);
-        res.status(500).json({ error: 'Failed to get VAPID public key' });
-    }
-});
-
 // 購読エンドポイント
 app.post('/api/subscribe', async (req, res) => {
   try {
-    console.log('=== 購読リクエスト受信 ===');
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    
     const { siteId, subscription, userAgent } = req.body;
-    
-    console.log('siteId:', siteId);
     
     // User-Agentを解析
     const deviceInfo = parseUserAgent(userAgent || '');
@@ -262,14 +238,11 @@ app.post('/api/subscribe', async (req, res) => {
       ]
     );
     
-    console.log('✅ 購読保存成功:', result.rows[0].id);
-    
     res.json({
       message: 'Subscription saved',
       subscriberId: result.rows[0].id
     });
   } catch (error) {
-    console.error('❌ 購読エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -563,9 +536,9 @@ app.post('/api/sites', authenticateToken, async (req, res) => {
       return res.status(500).json({ error: 'VAPID鍵が設定されていません' });
     }
     
-    // ドメインの重複チェック
+    // ドメインの重複チェック（アクティブなサイトのみ）
     const existing = await pool.query(
-      'SELECT id FROM sites WHERE domain = $1',
+      'SELECT id FROM sites WHERE domain = $1 AND is_active = true',
       [domain]
     );
     
@@ -675,7 +648,7 @@ app.delete('/api/sites/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // デフォルトサイトは削除できない
+    // サイトの存在確認
     const siteCheck = await pool.query(
       'SELECT domain FROM sites WHERE id = $1',
       [id]
@@ -685,14 +658,23 @@ app.delete('/api/sites/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Site not found' });
     }
     
-    // 論理削除
-    await pool.query(
-      'UPDATE sites SET is_active = false WHERE id = $1',
-      [id]
-    );
+    // 関連データを削除
+    // 1. キャンペーンを削除
+    await pool.query('DELETE FROM campaigns WHERE site_id = $1', [id]);
     
+    // 2. スケジュール済みキャンペーンを削除
+    await pool.query('DELETE FROM scheduled_campaigns WHERE site_id = $1', [id]);
+    
+    // 3. 購読者を削除
+    await pool.query('DELETE FROM subscribers WHERE site_id = $1', [id]);
+    
+    // 4. サイトを削除
+    await pool.query('DELETE FROM sites WHERE id = $1', [id]);
+    
+    console.log('✅ サイト削除成功:', id);
     res.json({ message: 'Site deleted successfully' });
   } catch (error) {
+    console.error('❌ サイト削除エラー:', error);
     res.status(500).json({ error: error.message });
   }
 });
