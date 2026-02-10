@@ -117,6 +117,21 @@ app.get('/health', async (req, res) => {
   }
 });
 
+// VAPID公開鍵取得エンドポイント（認証不要）
+app.get('/vapid-public-key', (req, res) => {
+    try {
+        if (!process.env.VAPID_PUBLIC_KEY) {
+            console.error('❌ VAPID_PUBLIC_KEY not set');
+            return res.status(500).json({ error: 'VAPID public key not configured' });
+        }
+        console.log('✅ VAPID公開鍵を返却');
+        res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
+    } catch (error) {
+        console.error('VAPID公開鍵取得エラー:', error);
+        res.status(500).json({ error: 'Failed to get VAPID public key' });
+    }
+});
+
 // ルートエンドポイント
 app.get('/', (req, res) => {
   res.json({
