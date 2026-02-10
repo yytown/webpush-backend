@@ -209,6 +209,30 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// ============================================
+// VAPID公開鍵エンドポイント（認証不要）
+// ============================================
+app.get('/vapid-public-key', (req, res) => {
+    try {
+        if (!process.env.VAPID_PUBLIC_KEY) {
+            console.error('❌ VAPID_PUBLIC_KEY not set in environment');
+            return res.status(500).json({ 
+                error: 'VAPID public key not configured' 
+            });
+        }
+        
+        res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
+    } catch (error) {
+        console.error('VAPID公開鍵取得エラー:', error);
+        res.status(500).json({ error: 'Failed to get VAPID public key' });
+    }
+});
+
+// 購読エンドポイント
+app.post('/api/subscribe', async (req, res) => {
+  // ... 既存のコード ...
+});
+
 // 購読エンドポイント
 app.post('/api/subscribe', async (req, res) => {
   try {
