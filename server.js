@@ -1023,6 +1023,39 @@ app.delete('/api/users/client/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// パスワード変更
+app.put('/api/users/:id/password', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newPassword } = req.body;
+    
+    // 管理者は全ユーザー、一般ユーザーは自分のみ変更可能
+    if (req.user.role !== 'admin' && id !== req.user.id) {
+      return res.status(403).json({ error: '権限がありません' });
+    }
+    
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'パスワードは6文字以上で設定してください' });
+    }
+    
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    const result = await pool.query(
+      'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id',
+      [hashedPassword, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'ユーザーが見つかりません' });
+    }
+    
+    res.json({ message: 'パスワードを変更しました' });
+  } catch (error) {
+    console.error('パスワード変更エラー:', error);
+    res.status(500).json({ error: 'パスワード変更に失敗しました' });
+  }
+});
+
 // 予約キャンペーン一覧取得
 app.get('/api/campaigns/scheduled', authenticateToken, checkSiteAccess, async (req, res) => {
   try {
