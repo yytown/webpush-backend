@@ -1230,7 +1230,7 @@ app.post('/api/subscribers/validate', authenticateToken, async (req, res) => {
     let deactivatedCount = 0;
     let validCount = 0;
     
-    // 各購読者に対してダミー通知を送信（実際には送らず、エンドポイントの有効性のみチェック）
+    // 各購読者に対してテスト通知を送信（Service Workerで無視され、エンドポイントの有効性のみチェック）
     for (const subscriber of subscribersResult.rows) {
       checkedCount++;
       
@@ -1243,7 +1243,7 @@ app.post('/api/subscribers/validate', authenticateToken, async (req, res) => {
           }
         };
         
-        // テスト用の空ペイロード（実際には送信されない）
+        // テスト通知（Service Workerで無視される）
         const testPayload = JSON.stringify({
           title: 'テスト',
           body: 'このメッセージは送信されません',
@@ -1382,11 +1382,11 @@ async function validateAllSubscribers() {
           }
         };
         
-        // テスト通知を送信（非常に小さいペイロード）
+        // テスト通知（Service Workerで無視される）
         const testPayload = JSON.stringify({
-          title: '.',
-          body: '.',
-          tag: 'validation-' + Date.now()
+          title: 'テスト',
+          body: 'このメッセージは表示されません',
+          tag: 'validation-test'
         });
         
         await webpush.sendNotification(subscription, testPayload);
